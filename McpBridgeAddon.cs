@@ -303,10 +303,10 @@ namespace NinjaTrader.NinjaScript.AddOns
                     foreach (var account in Core.Globals.Accounts)
                     {
                         accountCount++;
-                        if (account.GetPositions() != null)
-                            positionCount += account.GetPositions().Count;
-                        if (account.GetOrders() != null)
-                            orderCount += account.GetOrders().Count;
+                        if (account.Positions != null)
+                            positionCount += account.Positions.Count;
+                        if (account.Orders != null)
+                            orderCount += account.Orders.Count;
                     }
                 }
             }
@@ -455,7 +455,7 @@ namespace NinjaTrader.NinjaScript.AddOns
                     // Try alternative lookup
                     foreach (var account in Core.Globals.Accounts ?? Enumerable.Empty<Account>())
                     {
-                        var positions = account.GetPositions();
+                        var positions = account.Positions;
                         if (positions == null) continue;
                         var pos = positions.FirstOrDefault(p =>
                             p.Instrument != null &&
@@ -467,7 +467,7 @@ namespace NinjaTrader.NinjaScript.AddOns
                             break;
                         }
 
-                        var orders = account.GetOrders();
+                        var orders = account.Orders;
                         if (orders == null) continue;
                         var order = orders.FirstOrDefault(o =>
                             o.Instrument != null &&
@@ -725,7 +725,7 @@ namespace NinjaTrader.NinjaScript.AddOns
 
                 var workingOrders = orders.Where(o =>
                     o.State == OrderState.Working ||
-                    o.State == OrderState.PendingSubmitted ||
+                    o.State == OrderState.Submitted ||
                     o.State == OrderState.ChangePending ||
                     o.State == OrderState.CancelPending).ToList();
 
