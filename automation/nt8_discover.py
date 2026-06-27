@@ -49,11 +49,30 @@ def discover_window(window_title, depth=0, max_depth=5):
     
     # Use pywinauto's built-in control identifier printer
     try:
-        target.print_control_identifiers(depth=max_depth)
+        # Try the Desktop-level print_control_identifiers (works in pywinauto 0.6.x)
+        desktop.print_control_identifiers(target, depth=max_depth)
     except Exception as e:
-        print(f"  [WARN] print_control_identifiers failed: {e}")
-        print("  [INFO] Falling back to manual tree walk...")
-        walk_tree(target, depth=depth, max_depth=max_depth)
+        try:
+            # Try the wrapper's descendant approach
+            target.print_control_identifiers()
+        except Exception as e2:
+            print(f"  [WARN] print_control_identifiers failed: {e2}")
+            print("  [INFO] Using descendants() approach...")
+            # Use descendants() and print info
+            try:
+                descendants = target.descendants()
+                for d in descendants[:200]:  # limit output
+                    try:
+                        aid = d.automation_id() or ""
+                        name = d.window_text() or ""
+                        ctype = d.control_type() or ""
+                        if aid or name:
+                            print(f"    id={aid} | name={name[:50]} | type={ctype}")
+                    except:
+                        pass
+                print(f"  [INFO] Total descendants: {len(descendants)}")
+            except Exception as e3:
+                print(f"  [FAIL] Could not walk tree: {e3}")
 
 
 def walk_tree(control, depth=0, max_depth=5):
