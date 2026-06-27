@@ -44,9 +44,16 @@ def discover_window(window_title, depth=0, max_depth=5):
     
     print(f"\n{'='*60}")
     print(f"Discovering: {target.window_text()}")
+    print(f"  AutoId: {target.automation_id()}")
     print(f"{'='*60}")
     
-    walk_tree(target, depth=depth, max_depth=max_depth)
+    # Use pywinauto's built-in control identifier printer
+    try:
+        target.print_control_identifiers(depth=max_depth)
+    except Exception as e:
+        print(f"  [WARN] print_control_identifiers failed: {e}")
+        print("  [INFO] Falling back to manual tree walk...")
+        walk_tree(target, depth=depth, max_depth=max_depth)
 
 
 def walk_tree(control, depth=0, max_depth=5):
