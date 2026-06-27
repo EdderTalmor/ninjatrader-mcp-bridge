@@ -42,6 +42,27 @@ COMPILE_TIMEOUT = 15
 BACKTEST_POLL_INTERVAL = 2
 BACKTEST_TIMEOUT = 600  # 10 minutes max
 
+# ─── NT8 AutomationIds (discovered from nt8_discover.py) ────────────────-----
+
+NSE_AUTO_ID = "NinjaScriptEditorWindow"
+SA_AUTO_ID = "StrategyAnalyzerWindow"
+
+# Strategy Analyzer control IDs
+SA_RUN_BUTTON = "Run"
+SA_ABORT_BUTTON = "btnCancel"
+SA_MESSAGE_LABEL = "txtMessage"
+SA_ELAPSED_LABEL = "txtElapsedRemaining"
+SA_PROGRESS_BAR = "progressBar"
+SA_GRID_SUMMARY = "grdSummary"
+SA_GRID_RESULTS = "gridResults"
+SA_TRADE_PERFORMANCE = "tradePerformance"
+SA_STRATEGY_SELECTOR = "NinjaScriptSelector"
+SA_INSTRUMENT_SELECTOR = "InstrumentSelector"
+SA_BARS_PERIOD_VALUE = "BarsPeriodPropertyGridEditorPDEX_PDEX_VALUE"
+SA_DATE_FROM = "NinjaScriptBasePropertyGridEditorPDEX_From"
+SA_DATE_TO = "NinjaScriptBasePropertyGridEditorPDEX_To"
+SA_PARAM_PREFIX = "SampleMACrossOverPropertyGridEditorPDEX_"
+
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -162,7 +183,7 @@ def wait_for_compilation_complete(editor_window, timeout=COMPILE_TIMEOUT):
 def find_ninjascript_editor():
     """Find the NinjaScript Editor window in NinjaTrader."""
     print("  [*] Looking for NinjaScript Editor...")
-    editor = find_window(title="NinjaScript Editor", timeout=15)
+    editor = find_window(auto_id=NSE_AUTO_ID, timeout=15)
     if not editor:
         print("  [FAIL] NinjaScript Editor not found. Is NT8 open with the editor visible?")
         return None
@@ -173,7 +194,7 @@ def find_ninjascript_editor():
 def find_strategy_analyzer():
     """Find the Strategy Analyzer window."""
     print("  [*] Looking for Strategy Analyzer...")
-    analyzer = find_window(title="Strategy Analyzer", timeout=10)
+    analyzer = find_window(auto_id=SA_AUTO_ID, timeout=10)
     if not analyzer:
         print("  [WARN] Strategy Analyzer window not found. It will be opened when running backtest.")
         return None
@@ -310,14 +331,18 @@ def run_backtest(strategy_name, bar_type="Minute", bar_value="5",
     
     # Click Run
     print("  [*] Running backtest...")
-    run_btn = find_control(analyzer, auto_id="buttonRun") or find_control(analyzer, name="Run")
-    if run_btn:
-        run_btn.invoke()
+    run_success = invoke_button(analyzer, name=SA_RUN_BUTTON)
+    if run_success:
         print("  [OK] Backtest started")
     else:
-        print("  [WARN] Run button not found; trying alternative")
-        # Try scrolling to find it
-        
+        print("  [WARN] Run button not found; trying auto_id...")
+        run_success = invoke_button(analyzer, auto_id=SA_RUN_BUTTON)
+        if run_success:
+            print("  [OK] Backtest started (via auto_id)")
+        else:
+            print("  [FAIL] Could not find Run button")
+            return False, "Run button not found"
+    
     # Wait for backtest to complete
     print("  [*] Waiting for backtest to complete...")
     return wait_for_backtest_complete(analyzer)
@@ -338,8 +363,7 @@ def wait_for_backtest_complete(analyzer, timeout=BACKTEST_TIMEOUT):
         # Check for backtest running indicator
         running = False
         try:
-            # NT8 shows "Running backtest on..." in a label during execution
-            message_label = analyzer.child_window(auto_id="txtMessage")
+            message_label = analyzer.child_window(auto_id=SA_MESSAGE_LABEL)
             if message_label.exists(timeout=0.3):
                 msg = message_label.window_text() or ""
                 if "running" in msg.lower() or "backtest" in msg.lower():
@@ -349,11 +373,10 @@ def wait_for_backtest_complete(analyzer, timeout=BACKTEST_TIMEOUT):
         except:
             pass
         
-        # Check for results
+        # Check for results in the summary grid
         try:
-            summary_grid = analyzer.child_window(auto_id="grdSummary")
+            summary_grid = analyzer.child_window(auto_id=SA_GRID_SUMMARY)
             if summary_grid.exists(timeout=0.3):
-                # Check if it has data rows
                 rows = summary_grid.children()
                 if len(rows) > 0:
                     print(f"  [OK] Backtest complete after {elapsed:.0f}s")
@@ -390,14 +413,14 @@ def export_results(analyzer, strategy_name, output_dir):
     # Export Summary
     print("  [*] Exporting Summary...")
     summary_success = export_data_grid(
-        analyzer, "grdSummary", 
+        analyzer, SA_GRID_SUMMARY, 
         os.path.join(result_dir, "summary.csv")
     )
     
-    # Export Trades
+    # Export Trades (tradePerformance grid)
     print("  [*] Exporting Trades...")
     trades_success = export_data_grid(
-        analyzer, "grdTrades",
+        analyzer, SA_TRADE_PERFORMANCE,
         os.path.join(result_dir, "trades.csv")
     )
     
