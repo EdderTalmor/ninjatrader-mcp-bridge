@@ -622,31 +622,31 @@ namespace NinjaTrader.NinjaScript.AddOns
 
                 if (upperOrderType == "MARKET")
                 {
-                    OrderAction action = isBuy ? OrderAction.Buy : OrderAction.Sell;
-                    order = account.CreateOrder(instrument, action, OrderType.Market, tifEnum, quantity, 0, 0, 0, 0, OrderState.Submitted, "", "", null, null, false, "MCP", "", false);
+                OrderAction action = isBuy ? OrderAction.Buy : OrderAction.Sell;
+                order = account.CreateOrder(instrument, action, OrderType.Market, OrderEntry.Automated, tifEnum, quantity, 0, 0, "", "MCP", Core.Globals.MaxDate, null);
                 }
                 else if (upperOrderType == "LIMIT")
                 {
-                    if (!double.TryParse(limitPriceStr, out double limitPrice) || limitPrice <= 0)
-                        return ErrorJson("'limitPrice' required for limit orders");
-                    OrderAction action = isBuy ? OrderAction.Buy : OrderAction.Sell;
-                    order = account.CreateOrder(instrument, action, OrderType.Limit, tifEnum, quantity, limitPrice, 0, 0, 0, OrderState.Submitted, "", "", null, null, false, "MCP", "", false);
+                if (!double.TryParse(limitPriceStr, out double limitPrice) || limitPrice <= 0)
+                    return ErrorJson("'limitPrice' required for limit orders");
+                OrderAction action = isBuy ? OrderAction.Buy : OrderAction.Sell;
+                order = account.CreateOrder(instrument, action, OrderType.Limit, OrderEntry.Automated, tifEnum, quantity, limitPrice, 0, "", "MCP", Core.Globals.MaxDate, null);
                 }
                 else if (upperOrderType == "STOPMARKET" || upperOrderType == "STOP_MARKET" || upperOrderType == "STOP")
                 {
-                    if (!double.TryParse(stopPriceStr, out double stopPrice) || stopPrice <= 0)
-                        return ErrorJson("'stopPrice' required for stop market orders");
-                    OrderAction action = isBuy ? OrderAction.Buy : OrderAction.Sell;
-                    order = account.CreateOrder(instrument, action, OrderType.StopMarket, tifEnum, quantity, 0, stopPrice, 0, 0, OrderState.Submitted, "", "", null, null, false, "MCP", "", false);
+                if (!double.TryParse(stopPriceStr, out double stopPrice) || stopPrice <= 0)
+                    return ErrorJson("'stopPrice' required for stop market orders");
+                OrderAction action = isBuy ? OrderAction.Buy : OrderAction.Sell;
+                order = account.CreateOrder(instrument, action, OrderType.StopMarket, OrderEntry.Automated, tifEnum, quantity, 0, stopPrice, "", "MCP", Core.Globals.MaxDate, null);
                 }
                 else if (upperOrderType == "STOPLIMIT" || upperOrderType == "STOP_LIMIT")
                 {
-                    if (!double.TryParse(limitPriceStr, out double limPrice) || limPrice <= 0)
-                        return ErrorJson("'limitPrice' required for stop limit orders");
-                    if (!double.TryParse(stopPriceStr, out double stPrice) || stPrice <= 0)
-                        return ErrorJson("'stopPrice' required for stop limit orders");
-                    OrderAction action = isBuy ? OrderAction.Buy : OrderAction.Sell;
-                    order = account.CreateOrder(instrument, action, OrderType.StopLimit, tifEnum, quantity, limPrice, stPrice, 0, 0, OrderState.Submitted, "", "", null, null, false, "MCP", "", false);
+                if (!double.TryParse(limitPriceStr, out double limPrice) || limPrice <= 0)
+                    return ErrorJson("'limitPrice' required for stop limit orders");
+                if (!double.TryParse(stopPriceStr, out double stPrice) || stPrice <= 0)
+                    return ErrorJson("'stopPrice' required for stop limit orders");
+                OrderAction action = isBuy ? OrderAction.Buy : OrderAction.Sell;
+                order = account.CreateOrder(instrument, action, OrderType.StopLimit, OrderEntry.Automated, tifEnum, quantity, limPrice, stPrice, "", "MCP", Core.Globals.MaxDate, null);
                 }
                 else
                 {
