@@ -61,16 +61,39 @@ def discover_window(window_title, depth=0, max_depth=5):
             # Use descendants() and print info
             try:
                 descendants = target.descendants()
-                for d in descendants[:200]:  # limit output
+                count = 0
+                for d in descendants:
                     try:
-                        aid = d.automation_id() or ""
-                        name = d.window_text() or ""
-                        ctype = d.control_type() or ""
+                        aid = ""
+                        name = ""
+                        ctype = ""
+                        try:
+                            aid = d.automation_id() or ""
+                        except:
+                            pass
+                        try:
+                            name = d.window_text() or ""
+                        except:
+                            pass
+                        try:
+                            ctype = d.control_type() or ""
+                        except:
+                            pass
                         if aid or name:
-                            print(f"    id={aid} | name={name[:50]} | type={ctype}")
-                    except:
+                            print(f"    id={aid} | name={name[:60]} | type={ctype}")
+                            count += 1
+                            if count >= 300:
+                                print(f"  [INFO] (truncated at 300 of {len(descendants)} descendants)")
+                                break
+                    except Exception as inner_e:
                         pass
-                print(f"  [INFO] Total descendants: {len(descendants)}")
+                if count == 0:
+                    print(f"  [WARN] {len(descendants)} descendants found but none had id/name")
+                    # Try to print raw first few
+                    for i, d in enumerate(descendants[:5]):
+                        print(f"    [{i}] type={type(d).__name__} repr={repr(d)[:100]}")
+                else:
+                    print(f"  [INFO] Printed {count} elements (of {len(descendants)} descendants)")
             except Exception as e3:
                 print(f"  [FAIL] Could not walk tree: {e3}")
 
