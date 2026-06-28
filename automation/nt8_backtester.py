@@ -384,59 +384,22 @@ def wait_for_backtest_complete(analyzer, timeout=BACKTEST_TIMEOUT):
     while time.time() < end_time:
         elapsed = time.time() - start_time
         
-        # Check for results in the summary grid — this is the most reliable completion signal
+        # Most reliable completion detection: Abort button disappears
+        # btnCancel only exists while backtest is running
         try:
-            summary_grid = analyzer.child_window(auto_id=SA_GRID_SUMMARY)
-            if summary_grid.exists(timeout=0.5):
-                rows = summary_grid.children()
-                if len(rows) > 0:
-                    # Check if the first data row has actual content (not just headers)
-                    try:
-                        first_row_text = rows[0].window_text() if hasattr(rows[0], 'window_text') else ""
-                        if first_row_text and len(rows) > 2:
-                            print(f"  [OK] Backtest complete after {elapsed:.0f}s — {len(rows)} rows in grid")
-                            return True, f"Completed in {elapsed:.0f}s"
-                    except:
-                        pass
+            abort_btn = analyzer.child_window(auto_id=SA_ABORT_BUTTON)
+            if abort_btn.exists(timeout=1):
+                # Backtest still running
+                if elapsed % 15 < 1:
+                    print(f"  [....] Running... ({elapsed:.0f}s)")
+            else:
+                # Abort button gone — backtest complete!
+                print(f"  [OK] Backtest complete after {elapsed:.0f}s (abort button gone)")
+                return True, f"Completed in {elapsed:.0f}s"
         except:
-            pass
-        
-        # Also check for backtest running indicator
-        running = False
-        try:
-            message_label = analyzer.child_window(auto_id=SA_MESSAGE_LABEL)
-            if message_label.exists(timeout=0.3):
-                msg = message_label.window_text() or ""
-                if "running" in msg.lower() or "backtest" in msg.lower():
-                    running = True
-                    if elapsed % 10 < 1:
-                        print(f"  [....] Running... ({elapsed:.0f}s) - {msg[:60]}")
-        except:
-            pass
-        
-        # If no running indicator and no results yet, still wait
-        if not running:
-            # Check if results appeared
-            try:
-                grid = analyzer.child_window(auto_id=SA_GRID_SUMMARY)
-                if grid.exists(timeout=0.5) and len(grid.children()) > 2:
-                    print(f"  [OK] Backtest complete after {elapsed:.0f}s (no running indicator)")
-                    return True, f"Completed in {elapsed:.0f}s"
-            except:
-                pass
-        
-        # Check for error
-        try:
-            error_label = analyzer.child_window(auto_id="txtError")
-            if error_label.exists(timeout=0.3):
-                text = error_label.window_text()
-                if text:
-                    print(f"  [FAIL] Backtest error: {text}")
-                    return False, text
-        except:
-            pass
-        
-        time.sleep(BACKTEST_POLL_INTERVAL)
+            # If we can't find abort button at all, also means done
+            print(f"  [OK] Backtest complete after {elapsed:.0f}s (no abort button)")
+            return True, f"Completed in {elapsed:.0f}s"
     
     print(f"  [FAIL] Backtest timeout after {timeout}s")
     return False, "Timeout"
