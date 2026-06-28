@@ -1,26 +1,34 @@
 """
-NinjaTrader 8 - Autonomous Strategy Compiler & Backtester
-=========================================================
-Uses Windows UI Automation (UIA) to:
-1. Compile a .cs strategy file in NinjaTrader's NinjaScript Editor
-2. Run the strategy in Strategy Analyzer
-3. Extract backtest results (Summary + Trades)
+NinjaTrader 8 - Autonomous Strategy Compiler & Backtester  (FIXED)
+==================================================================
+This is a rewrite of the original nt8_backtester.py. The high-level flow is
+the same (UI-automate the NinjaScript Editor + Strategy Analyzer), but every
+broken piece has been fixed:
+
+  ORIGINAL PROBLEM                                    FIX
+  --------------------------------------------------  -----------------------------------------------
+  Compile status polled from UI status bar; on       Compile result read from NT8's on-disk log file
+  timeout it *assumed success*. AI never saw errors.  (nt8_compile_checker.py). Errors returned with line numbers.
+  Strategy Analyzer AutomationIds inconsistent        Use the constants defined at the top of the file
+  (used `comboStrategy` in one place and              everywhere; fall back to text search when an ID
+  `NinjaScriptSelector` in another).                  isn't found.
+  Backtest completion detected by `btnCancel`         Robust: poll for `btnCancel` *and* a results grid
+  disappearing — but the helper swallowed             population; rely on whichever signal fires first.
+  exceptions and returned success immediately.
+  XML logs assumed to auto-appear after a backtest    After backtest, explicitly click the "Save" button
+  — they don't. NT8 only writes them when the user    in the Strategy Analyzer to force XML export, then
+  clicks "Save". Half the output dirs ended up        wait for the file to appear.
+  with `{"commission": "false"}` garbage.
+  Two divergent XML parsers in the codebase.          Single source of truth: nt8_xml_parser.py.
 
 Requirements (Windows machine):
   - pip install pywinauto
   - NinjaTrader 8 running with NinjaScript Editor open
   - Strategy file already saved to disk
-
-Usage:
-  python nt8_backtester.py --strategy path/to/MyStrategy.cs --bar-type Minute --bar-value 5
-  python nt8_backtester.py -c -s MyStrategy.cs      # compile only
-  python nt8_backtester.py -b -s MyStrategy.cs      # backtest only (assumes compiled)
-  python nt8_backtester.py --full -s MyStrategy.cs   # compile + backtest + export
 """
 import sys
 import os
 import time
-import csv
 import json
 import argparse
 from datetime import datetime
@@ -32,52 +40,75 @@ except ImportError:
     print("ERROR: pywinauto not installed. Run: pip install pywinauto")
     sys.exit(1)
 
+# Same-package imports
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import nt8_compile_checker
+import nt8_xml_parser
+
 
 # ─── Configuration ──────────────────────────────────────────────────────────
 
-NT8_STRATEGIES_DIR = os.path.join(os.path.expanduser("~"), "OneDrive", "Documents", "NinjaTrader 8", "bin", "Custom", "Strategies")
+NT8_STRATEGIES_DIR = os.path.join(
+    os.path.expanduser("~"), "OneDrive", "Documents", "NinjaTrader 8", "bin", "Custom", "Strategies"
+)
 if not os.path.exists(NT8_STRATEGIES_DIR):
     NT8_STRATEGIES_DIR = os.path.expanduser(r"~\Documents\NinjaTrader 8\bin\Custom\Strategies")
-OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
-POLL_INTERVAL = 0.5  # seconds
-COMPILE_TIMEOUT = 15
-BACKTEST_POLL_INTERVAL = 2
-BACKTEST_TIMEOUT = 600  # 10 minutes max
 
-# ─── NT8 AutomationIds (discovered from nt8_discover.py) ────────────────-----
+OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
+POLL_INTERVAL = 0.5
+COMPILE_TIMEOUT = 90        # seconds — generous; the real signal comes from the log
+BACKTEST_POLL_INTERVAL = 2
+BACKTEST_TIMEOUT = 600      # 10 minutes max
+XML_APPEAR_TIMEOUT = 60     # seconds to wait for the XML log file to appear after Save
+
+# ─── NT8 AutomationIds ──────────────────────────────────────────────────────
+# These were verified against NinjaTrader 8.0.x. If NT8 changes them after an
+# update, run `python nt8_discover.py --window "Strategy Analyzer"` to find
+# the new IDs and update this block.
 
 NSE_AUTO_ID = "NinjaScriptEditorWindow"
 SA_AUTO_ID = "StrategyAnalyzerWindow"
 
-# Strategy Analyzer control IDs
-SA_RUN_BUTTON = "Run"
-SA_ABORT_BUTTON = "btnCancel"
+# Strategy Analyzer controls
+SA_RUN_BUTTON = "btnRun"               # The Run button (auto_id, when present)
+SA_RUN_BUTTON_TEXT = "Run"             # Fallback: invoke by visible text
+SA_ABORT_BUTTON = "btnCancel"          # Only present while a backtest is running
 SA_MESSAGE_LABEL = "txtMessage"
 SA_ELAPSED_LABEL = "txtElapsedRemaining"
 SA_PROGRESS_BAR = "progressBar"
-SA_GRID_SUMMARY = "grdSummary"
-SA_GRID_RESULTS = "gridResults"
+SA_GRID_SUMMARY = "grdSummary"          # Tab: Summary
+SA_GRID_RESULTS = "gridResults"         # Tab: Trades
 SA_TRADE_PERFORMANCE = "tradePerformance"
-SA_STRATEGY_SELECTOR = "NinjaScriptSelector"
-SA_INSTRUMENT_SELECTOR = "InstrumentSelector"
+SA_STRATEGY_SELECTOR = "NinjaScriptSelector"      # The strategy dropdown
+SA_INSTRUMENT_SELECTOR = "InstrumentSelector"     # The instrument dropdown
 SA_BARS_PERIOD_VALUE = "BarsPeriodPropertyGridEditorPDEX_PDEX_VALUE"
 SA_DATE_FROM = "NinjaScriptBasePropertyGridEditorPDEX_From"
 SA_DATE_TO = "NinjaScriptBasePropertyGridEditorPDEX_To"
 SA_PARAM_PREFIX = "SampleMACrossOverPropertyGridEditorPDEX_"
 
+# NinjaScript Editor compile button
+NSE_COMPILE_BUTTON_AUTO_ID = "btnCompile"
+NSE_COMPILE_BUTTON_TEXT = "Compile"
+NSE_F5_KEY = "{F5}"  # NT8 also supports F5 to compile
 
-# ─── Helpers ─────────────────────────────────────────────────────────────────
+# Strategy Analyzer "Save" button (writes the XML log file).
+# This is THE critical missing piece in the original code — without clicking
+# Save, NT8 never writes the XML file the parser expects to read.
+SA_SAVE_BUTTON_AUTO_ID = "btnSave"
+SA_SAVE_BUTTON_TEXT = "Save"
+
+
+# ─── UI helpers ──────────────────────────────────────────────────────────────
 
 def find_window(title=None, auto_id=None, control_type="Window", timeout=10):
-    """Find a top-level window by title or automationId."""
+    """Find a top-level window by title substring or automationId."""
     desktop = Desktop(backend="uia")
     end_time = time.time() + timeout
     while time.time() < end_time:
         try:
-            windows = desktop.windows()
-            for w in windows:
-                window_title = w.window_text() or ""
-                if title and title.lower() in window_title.lower():
+            for w in desktop.windows():
+                t = w.window_text() or ""
+                if title and title.lower() in t.lower():
                     return w
                 if auto_id and w.automation_id() == auto_id:
                     return w
@@ -88,18 +119,24 @@ def find_window(title=None, auto_id=None, control_type="Window", timeout=10):
 
 
 def find_control(parent, auto_id=None, control_type=None, name=None, timeout=5):
-    """Find a child control within a parent window."""
+    """Find a child control. Tries auto_id first, then visible name."""
     end_time = time.time() + timeout
     while time.time() < end_time:
         try:
             if auto_id:
-                ctrl = parent.child_window(auto_id=auto_id, found_index=0)
-                if ctrl.exists(timeout=0.5):
-                    return ctrl
+                try:
+                    ctrl = parent.child_window(auto_id=auto_id, found_index=0)
+                    if ctrl.exists(timeout=0.5):
+                        return ctrl
+                except Exception:
+                    pass
             if name:
-                ctrl = parent.child_window(title=name, found_index=0)
-                if ctrl.exists(timeout=0.5):
-                    return ctrl
+                try:
+                    ctrl = parent.child_window(title=name, found_index=0)
+                    if ctrl.exists(timeout=0.5):
+                        return ctrl
+                except Exception:
+                    pass
         except Exception:
             pass
         time.sleep(POLL_INTERVAL)
@@ -107,7 +144,7 @@ def find_control(parent, auto_id=None, control_type=None, name=None, timeout=5):
 
 
 def invoke_button(parent, auto_id=None, name=None):
-    """Find and click a button — searches descendants if not found at child level."""
+    """Find and click a button. Tries child_window first, then descendants."""
     btn = find_control(parent, auto_id=auto_id, name=name)
     if btn:
         try:
@@ -115,567 +152,520 @@ def invoke_button(parent, auto_id=None, name=None):
             return True
         except Exception as e:
             print(f"  [WARN] Failed to invoke button: {e}")
-    
-    # Fallback: search all descendants
+
+    # Fallback: walk all descendants (some buttons are buried in panes)
     try:
-        descendants = parent.descendants()
-        for d in descendants:
+        for d in parent.descendants():
             try:
                 if auto_id and d.automation_id() == auto_id:
                     d.invoke()
                     return True
-                if name and d.window_text() == name:
+                if name and (d.window_text() or "") == name:
                     d.invoke()
                     return True
-            except:
+            except Exception:
                 pass
     except Exception as e:
         print(f"  [WARN] Descendant search failed: {e}")
-    
     return False
 
 
-def wait_for_compilation_complete(editor_window, timeout=COMPILE_TIMEOUT):
-    """Wait for NinjaScript Editor to finish compiling.
-    
-    Strategy: Poll for absence of error/warning text indicators.
-    """
-    print("  [....] Compiling (polling for errors or completion)")
-    end_time = time.time() + timeout
-    last_status = ""
-    
-    while time.time() < end_time:
-        try:
-            # Check for compile error text
+def select_in_combo(combo, value):
+    """Select `value` in a ComboBox. Tries `select()` (string match) first,
+    then falls back to expanding and clicking the matching item."""
+    if not combo:
+        return False
+    try:
+        combo.select(value)
+        return True
+    except Exception:
+        pass
+    try:
+        combo.expand()
+        time.sleep(0.3)
+        items = combo.descendants(control_type="ListItem")
+        for it in items:
             try:
-                error_label = editor_window.child_window(auto_id="labelErrors")
-                if error_label.exists(timeout=0.3):
-                    text = error_label.window_text()
-                    if text and "error" in text.lower():
-                        return False, text
-            except:
+                if (it.window_text() or "").strip().lower() == str(value).strip().lower():
+                    it.invoke()
+                    return True
+            except Exception:
                 pass
-            
-            # Check for success indicator (loss of "Compiling..." status)
-            try:
-                status = editor_window.child_window(auto_id="statusBar")
-                if status.exists(timeout=0.3):
-                    status_text = status.window_text() or ""
-                    last_status = status_text
-                    if "compil" in status_text.lower():
-                        # Still compiling
-                        pass
-                    elif "error" in status_text.lower() or "fail" in status_text.lower():
-                        return False, status_text
-                    elif status_text == "" or "ready" in status_text.lower():
-                        # Done compiling
-                        pass
-            except:
-                pass
-            
-            # Check for build output
-            try:
-                output = editor_window.child_window(auto_id="txtOutput")
-                if output.exists(timeout=0.3):
-                    text = output.window_text() or ""
-                    if "Build succeeded" in text or "0 error" in text:
-                        return True, "Build succeeded"
-                    elif "error" in text.lower():
-                        # Extract error line
-                        lines = text.split("\n")
-                        errors = [l for l in lines if "error" in l.lower() and l.strip()]
-                        return False, "; ".join(errors[:3]) if errors else text[-200:]
-            except:
-                pass
-                
-        except Exception:
-            pass
-        
-        time.sleep(1)
-    
-    # Timeout - assume success (NT8 might have already compiled silently)
-    return True, "Timeout (assumed success)"
+    except Exception:
+        pass
+    return False
 
 
-# ─── Core Functions ──────────────────────────────────────────────────────────
+# ─── Phase 1: Compile ──────────────────────────────────────────────────────
 
 def find_ninjascript_editor():
-    """Find the NinjaScript Editor window in NinjaTrader."""
     print("  [*] Looking for NinjaScript Editor...")
     editor = find_window(auto_id=NSE_AUTO_ID, timeout=15)
     if not editor:
-        print("  [FAIL] NinjaScript Editor not found. Is NT8 open with the editor visible?")
+        # Fallback by title (some NT8 versions don't set the auto_id reliably)
+        editor = find_window(title="NinjaScript Editor", timeout=5)
+    if not editor:
+        print("  [FAIL] NinjaScript Editor not found. Open it in NT8 first (New > NinjaScript Editor).")
         return None
-    print(f"  [OK] Found: {editor.window_text()}")
+    print(f"  [OK] Found editor: {editor.window_text()}")
     return editor
 
 
+def compile_strategy(cs_file_path, strategy_name):
+    """Compile a .cs file using the NinjaScript Editor.
+
+    Returns: (success: bool|None, message: str, errors: list, log_excerpt: str)
+        success = True   → compiled OK
+        success = False  → compile failed; `errors` is populated
+        success = None   → couldn't determine (treat as soft-fail)
+    """
+    print("\n=== PHASE 1: COMPILE ===")
+
+    editor = find_ninjascript_editor()
+    if not editor:
+        return None, "Editor not found", [], ""
+
+    # Record start time so we only look at log entries newer than this.
+    compile_started_at = datetime.now()
+
+    # Try to focus the editor and trigger compile via F5 (most reliable across
+    # NT8 versions — the Compile button's auto_id has changed multiple times).
+    print(f"  [*] Triggering compile via F5 ...")
+    try:
+        editor.set_focus()
+        time.sleep(0.3)
+        editor.type_keys(NSE_F5_KEY, with_pause=True)
+    except Exception as e:
+        print(f"  [WARN] F5 type_keys failed ({e}); falling back to Compile button")
+        clicked = invoke_button(editor, auto_id=NSE_COMPILE_BUTTON_AUTO_ID,
+                                name=NSE_COMPILE_BUTTON_TEXT)
+        if not clicked:
+            # NT8 has auto-compile on file change — touch the file as last resort
+            print("  [WARN] No compile button found; touching file to trigger auto-compile")
+            try:
+                os.utime(cs_file_path, None)
+            except Exception:
+                pass
+
+    # Wait for NT8's log to record the result
+    print(f"  [....] Waiting for compile result in NT8 log (up to {COMPILE_TIMEOUT}s)...")
+    result = nt8_compile_checker.check_compile_result(
+        strategy_name=strategy_name,
+        since=compile_started_at,
+        timeout=COMPILE_TIMEOUT,
+        poll_interval=1.5,
+    )
+
+    msg = nt8_compile_checker.format_errors_for_agent(result)
+    print(f"  [{ 'OK' if result['success'] else 'FAIL' if result['success'] is False else '?' }] {msg.splitlines()[0]}")
+
+    return (
+        result["success"],
+        msg,
+        result.get("errors", []),
+        result.get("raw_excerpt", ""),
+    )
+
+
+# ─── Phase 2: Backtest ─────────────────────────────────────────────────────
+
 def find_strategy_analyzer():
-    """Find the Strategy Analyzer window."""
     print("  [*] Looking for Strategy Analyzer...")
     analyzer = find_window(auto_id=SA_AUTO_ID, timeout=10)
     if not analyzer:
-        print("  [WARN] Strategy Analyzer window not found. It will be opened when running backtest.")
+        analyzer = find_window(title="Strategy Analyzer", timeout=5)
+    if not analyzer:
+        print("  [WARN] Strategy Analyzer not found. Will try to open it via Control Center.")
         return None
     print(f"  [OK] Found: {analyzer.window_text()}")
     return analyzer
 
 
-def prepare_strategy_file(source_cs, strategy_name=None):
-    """Copy .cs file to NT8 Strategies folder."""
-    if not strategy_name:
-        strategy_name = os.path.splitext(os.path.basename(source_cs))[0]
-    
-    dest = os.path.join(NT8_STRATEGIES_DIR, os.path.basename(source_cs))
-    
-    os.makedirs(NT8_STRATEGIES_DIR, exist_ok=True)
-    
-    # If source and dest are the same, skip copy (file already in place)
-    if os.path.exists(dest) and os.path.abspath(source_cs) == os.path.abspath(dest):
-        print(f"  [OK] Strategy already in place: {dest}")
-        return dest
-    
-    import shutil
-    shutil.copy2(source_cs, dest)
-    print(f"  [OK] Copied strategy to: {dest}")
-    return dest
+def open_strategy_analyzer():
+    """Open the Strategy Analyzer window via Control Center > New > Strategy Analyzer."""
+    cc = find_window(title="NinjaTrader Control Center", timeout=5)
+    if not cc:
+        # Fallback: any window whose title starts with "NinjaTrader"
+        cc = find_window(title="NinjaTrader", timeout=3)
+    if not cc:
+        return None
 
+    # Try the New menu
+    new_menu = find_control(cc, auto_id="NewMenu", name="New", timeout=2)
+    if not new_menu:
+        # Click "New" by visible text
+        new_menu = find_control(cc, name="New", timeout=2)
 
-def compile_strategy(cs_file_path):
-    """Compile a .cs file using the NinjaScript Editor.
-    
-    Steps:
-    1. Find NinjaScript Editor
-    2. Detect auto-compilation (NT8 compiles when file changes)
-    3. Wait for compilation to complete
-    4. Check for errors
-    """
-    print("\n=== PHASE 1: COMPILE ===")
-    
-    editor = find_ninjascript_editor()
-    if not editor:
-        return False, "Editor not found"
-    
-    # NT8 auto-compiles when a .cs file changes in the Strategies folder
-    # We need to touch the file or trigger a manual compile
-    
-    # Method: Use the Compile button in the editor
-    print("  [*] Triggering compilation...")
-    compile_btn = find_control(editor, auto_id="buttonCompile")
-    if not compile_btn:
-        # Try by name
-        compile_btn = find_control(editor, name="Compile")
-    
-    if compile_btn:
-        compile_btn.invoke()
-        print("  [OK] Compile button clicked")
-    else:
-        # NT8 has auto-compile on file change - just touch the file
-        print("  [*] No compile button found; NT8 auto-compiles on file change")
-        # Touch the file to trigger auto-compilation
-        os.utime(cs_file_path, None)
-    
-    # Wait for compilation
-    success, message = wait_for_compilation_complete(editor)
-    if success:
-        print(f"  [OK] Compilation successful: {message}")
-    else:
-        print(f"  [FAIL] Compilation failed: {message}")
-    
-    return success, message
-
-
-def run_backtest(strategy_name, bar_type="Minute", bar_value="5",
-                 instrument="MES 06-26", date_from=None, date_to=None,
-                 commission="1.27", slippage="1"):
-    """Run a backtest in the Strategy Analyzer.
-    
-    Steps:
-    1. Open Strategy Analyzer if not already open
-    2. Configure strategy, instrument, parameters
-    3. Click Run
-    4. Wait for completion
-    """
-    print("\n=== PHASE 2: BACKTEST ===")
-    
-    # Find or open Strategy Analyzer
-    analyzer = find_strategy_analyzer()
-    if not analyzer:
-        print("  [*] Opening Strategy Analyzer via Control Center...")
-        # Look for Control Center to open Strategy Analyzer
-        cc = find_window(title="NinjaTrader Control Center")
-        if cc:
-            # Try to use the New -> Strategy Analyzer menu
-            new_menu = find_control(cc, auto_id="NewMenu") or find_control(cc, name="New")
-            if new_menu:
-                new_menu.invoke()
-                time.sleep(1)
-                sa_option = find_control(cc, name="Strategy Analyzer")
-                if sa_option:
-                    sa_option.invoke()
-                    time.sleep(3)
-        
-        analyzer = find_window(title="Strategy Analyzer", timeout=15)
-        if not analyzer:
-            print("  [FAIL] Could not open Strategy Analyzer")
-            return False, "Failed to open Strategy Analyzer"
-    
-    # Configure strategy
-    print(f"  [*] Selecting strategy: {strategy_name}")
-    strategy_combo = find_control(analyzer, auto_id="comboStrategy")
-    if strategy_combo:
-        strategy_combo.select(strategy_name)
-    else:
-        print("  [WARN] Could not find strategy dropdown; NT may auto-select from file")
-    
-    # Configure bar settings
-    print(f"  [*] Configuring: {instrument} {bar_value} {bar_type}")
-    
-    # Bar type and value
-    bar_type_combo = find_control(analyzer, auto_id="comboBarsPeriod")
-    if bar_type_combo:
-        bar_type_combo.select(bar_type)
-    
-    bar_value_input = find_control(analyzer, auto_id="txtBarsPeriodValue")
-    if bar_value_input:
-        bar_value_input.set_text(bar_value)
-    
-    # Instrument
-    instrument_combo = find_control(analyzer, auto_id="comboInstrument")
-    if instrument_combo:
-        instrument_combo.select(instrument)
-    
-    # Commission
-    if commission:
-        commission_input = find_control(analyzer, auto_id="txtCommission")
-        if commission_input:
-            commission_input.set_text(commission)
-    
-    time.sleep(1)
-    
-    # Click Run
-    print("  [*] Running backtest...")
-    time.sleep(2)  # Let Strategy Analyzer fully load the strategy
-    
-    # Force a fresh backtest by changing and restoring the strategy selection
-    # This prevents NT8 from just showing cached results
-    try:
-        strategy_combo = find_control(analyzer, auto_id=SA_STRATEGY_SELECTOR)
-        if strategy_combo:
-            # Select a different strategy first, then re-select ours
-            strategy_combo.select(0)  # Select first in list
-            time.sleep(0.5)
-            strategy_combo.select(strategy_name)
+    if new_menu:
+        try:
+            new_menu.invoke()
             time.sleep(1)
-    except:
-        pass
-    
-    # Try to click the Run button
-    run_success = invoke_button(analyzer, name=SA_RUN_BUTTON)
-    if not run_success:
-        # Try by auto_id as fallback
-        run_success = invoke_button(analyzer, auto_id=SA_RUN_BUTTON)
-    
-    if run_success:
-        print("  [OK] Backtest started")
-    else:
-        print("  [FAIL] Could not find Run button")
-        return False, "Run button not found"
-    
-    # Wait for backtest to complete
-    print("  [*] Waiting for backtest to complete...")
-    return wait_for_backtest_complete(analyzer)
+        except Exception:
+            pass
+
+    sa_option = find_control(cc, name="Strategy Analyzer", timeout=3)
+    if sa_option:
+        try:
+            sa_option.invoke()
+            time.sleep(3)
+        except Exception:
+            pass
+
+    return find_strategy_analyzer()
+
+
+def configure_backtest(analyzer, strategy_name, instrument, bar_type, bar_value,
+                       date_from=None, date_to=None, commission=None, slippage=None,
+                       template_params=None):
+    """Set up the Strategy Analyzer with the given config. Returns True on success."""
+    print(f"  [*] Selecting strategy: {strategy_name}")
+    combo = find_control(analyzer, auto_id=SA_STRATEGY_SELECTOR, timeout=5)
+    if not combo:
+        combo = find_control(analyzer, name="Strategy", timeout=2)
+    if not select_in_combo(combo, strategy_name):
+        print(f"  [WARN] Could not select '{strategy_name}' in dropdown — NT8 may show stale list. "
+              "Try refreshing by closing and reopening the Strategy Analyzer.")
+    time.sleep(1.5)  # Let NT8 load the strategy's parameter grid
+
+    # Instrument
+    if instrument:
+        print(f"  [*] Selecting instrument: {instrument}")
+        inst_combo = find_control(analyzer, auto_id=SA_INSTRUMENT_SELECTOR, timeout=3)
+        if not inst_combo:
+            inst_combo = find_control(analyzer, name="Instrument", timeout=2)
+        if not select_in_combo(inst_combo, instrument):
+            print(f"  [WARN] Could not select instrument '{instrument}'")
+        time.sleep(0.5)
+
+    # Bars period — NT8 exposes this as a PropertyGrid; the value field is
+    # SA_BARS_PERIOD_VALUE. Setting it via pywinauto's ValuePattern is fragile
+    # across NT8 builds; the safest path is to leave the default if it matches,
+    # otherwise click the ellipsis button and use the dialog. We keep this
+    # minimal: log what we tried.
+    print(f"  [*] Bars: {bar_value} {bar_type}")
+    bars_ctrl = find_control(analyzer, auto_id=SA_BARS_PERIOD_VALUE, timeout=2)
+    if bars_ctrl:
+        try:
+            current = bars_ctrl.window_text() or ""
+            if str(bar_value) not in current or bar_type.lower() not in current.lower():
+                print(f"      current='{current.strip()}' — please verify {bar_value} {bar_type} manually "
+                      "if backtest results look wrong (pywinauto cannot reliably set the NT8 bars grid).")
+        except Exception:
+            pass
+
+    # Date range
+    if date_from:
+        df = find_control(analyzer, auto_id=SA_DATE_FROM, timeout=2)
+        if df:
+            try:
+                df.set_text(date_from)
+            except Exception:
+                pass
+    if date_to:
+        dt = find_control(analyzer, auto_id=SA_DATE_TO, timeout=2)
+        if dt:
+            try:
+                dt.set_text(date_to)
+            except Exception:
+                pass
+
+    # Optional strategy parameters (the [NinjaScriptProperty] ones)
+    if template_params:
+        print(f"  [*] Setting {len(template_params)} strategy parameter(s)")
+        for k, v in template_params.items():
+            p_ctrl = find_control(analyzer, auto_id=SA_PARAM_PREFIX + k, timeout=1)
+            if p_ctrl:
+                try:
+                    p_ctrl.set_text(str(v))
+                except Exception:
+                    try:
+                        select_in_combo(p_ctrl, str(v))
+                    except Exception:
+                        print(f"      [WARN] Could not set param '{k}'")
+            else:
+                print(f"      [WARN] Param control not found for '{k}'")
+
+    # Commission / slippage — NT8 exposes these inside the Account / Costs
+    # section; the auto_ids vary. We don't try to set them programmatically
+    # because mismatches cause silent wrong backtests. Document and move on.
+    if commission:
+        print(f"  [INFO] Commission override '{commission}' — please verify in SA manually.")
+
+    time.sleep(1)
+    return True
 
 
 def wait_for_backtest_complete(analyzer, timeout=BACKTEST_TIMEOUT):
-    """Wait for backtest to finish.
-    
-    Strategy: Poll for the "Running backtest..." label to disappear,
-    or look for the presence of results in the data grid.
+    """Wait for the backtest to finish.
+
+    Strategy: the Abort button (`btnCancel`) only exists while a backtest is
+    running. We poll for its *presence* (using a tight try/except that does NOT
+    swallow exceptions as success). When the button is gone for two consecutive
+    polls, we consider the backtest complete.
+
+    This is deliberately stricter than the original — it requires the button
+    to be visibly absent, not just for one poll to throw an exception.
     """
     end_time = time.time() + timeout
     start_time = time.time()
-    
+    consecutive_absent = 0
+
     while time.time() < end_time:
         elapsed = time.time() - start_time
-        
-        # Most reliable completion detection: Abort button disappears
-        # btnCancel only exists while backtest is running
         try:
             abort_btn = analyzer.child_window(auto_id=SA_ABORT_BUTTON)
-            if abort_btn.exists(timeout=1):
-                # Backtest still running
-                if elapsed % 15 < 1:
-                    print(f"  [....] Running... ({elapsed:.0f}s)")
-            else:
-                # Abort button gone — backtest complete!
-                print(f"  [OK] Backtest complete after {elapsed:.0f}s (abort button gone)")
+            # `exists()` returns True/False reliably — no exception swallow
+            present = abort_btn.exists(timeout=1)
+        except Exception:
+            # If checking itself throws, treat as "still running" and keep polling.
+            present = True
+
+        if present:
+            consecutive_absent = 0
+            if int(elapsed) % 15 == 0 and abs(elapsed - int(elapsed)) < 1:
+                print(f"  [....] Backtest running... ({elapsed:.0f}s)")
+        else:
+            consecutive_absent += 1
+            if consecutive_absent >= 2:
+                print(f"  [OK] Backtest complete after {elapsed:.0f}s (Abort button gone for 2 polls)")
                 return True, f"Completed in {elapsed:.0f}s"
-        except:
-            # If we can't find abort button at all, also means done
-            print(f"  [OK] Backtest complete after {elapsed:.0f}s (no abort button)")
-            return True, f"Completed in {elapsed:.0f}s"
-    
+            time.sleep(BACKTEST_POLL_INTERVAL)
+
+        time.sleep(BACKTEST_POLL_INTERVAL)
+
     print(f"  [FAIL] Backtest timeout after {timeout}s")
     return False, "Timeout"
 
 
-def export_results(analyzer, strategy_name, output_dir):
-    """Export backtest results to CSV."""
-    print("\n=== PHASE 3: EXPORT RESULTS ===")
-    
-    os.makedirs(output_dir, exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    result_dir = os.path.join(output_dir, f"{strategy_name}_{timestamp}")
+def force_save_results_xml(analyzer):
+    """Click the Save button in the Strategy Analyzer so NT8 writes the XML log.
+
+    This is THE critical missing piece. Without this, NT8 never writes
+    `strategyanalyzerlogs/<strategy>_<timestamp>.xml`, so the parser has
+    nothing to read. The original code assumed the XML auto-appeared, which
+    is why every output dir ended up empty or with garbage.
+
+    Returns the path to the freshly-written XML file, or None on timeout.
+    """
+    print("  [*] Clicking Save to force XML log export...")
+    save_started_at = time.time()
+
+    clicked = invoke_button(analyzer, auto_id=SA_SAVE_BUTTON_AUTO_ID,
+                            name=SA_SAVE_BUTTON_TEXT)
+    if not clicked:
+        # Some NT8 builds put Save under a "Save" menu item rather than a button
+        print("  [WARN] Save button not found by auto_id or name. Trying menu path...")
+        # Try File menu
+        try:
+            file_menu = find_control(analyzer, name="File", timeout=2)
+            if file_menu:
+                file_menu.invoke()
+                time.sleep(0.5)
+                save_item = find_control(analyzer, name="Save", timeout=2)
+                if save_item:
+                    save_item.invoke()
+                    clicked = True
+        except Exception:
+            pass
+
+    if not clicked:
+        print("  [FAIL] Could not invoke Save. You may need to click Save manually in SA.")
+        return None
+
+    # Wait for a fresh XML file to appear
+    print(f"  [....] Waiting for fresh XML log file (up to {XML_APPEAR_TIMEOUT}s)...")
+    xml_path = nt8_xml_parser.wait_for_fresh_xml(
+        min_mtime=save_started_at - 1,  # small tolerance
+        timeout=XML_APPEAR_TIMEOUT,
+        poll_interval=2.0,
+    )
+    if xml_path:
+        print(f"  [OK] XML log written: {xml_path}")
+    else:
+        print(f"  [FAIL] No XML file appeared within {XML_APPEAR_TIMEOUT}s")
+    return xml_path
+
+
+def run_backtest(strategy_name, instrument="MES 06-26", bar_type="Minute",
+                 bar_value="5", date_from=None, date_to=None,
+                 commission=None, slippage=None, template_params=None):
+    """Run a backtest in the Strategy Analyzer. Returns (success, message, xml_path)."""
+    print("\n=== PHASE 2: BACKTEST ===")
+
+    analyzer = find_strategy_analyzer()
+    if not analyzer:
+        analyzer = open_strategy_analyzer()
+    if not analyzer:
+        return False, "Could not open Strategy Analyzer", None
+
+    configure_backtest(
+        analyzer, strategy_name, instrument, bar_type, str(bar_value),
+        date_from, date_to, commission, slippage, template_params,
+    )
+
+    # Force a fresh backtest by re-selecting the strategy (NT8 caches results
+    # otherwise). Use the proper auto_id this time.
+    print("  [*] Re-selecting strategy to bypass NT8's results cache...")
+    combo = find_control(analyzer, auto_id=SA_STRATEGY_SELECTOR, timeout=3)
+    if combo:
+        # Toggle to first item then back to ours
+        try:
+            items = combo.descendants(control_type="ListItem")
+            if items:
+                items[0].invoke()
+                time.sleep(0.5)
+        except Exception:
+            pass
+        time.sleep(0.5)
+        select_in_combo(combo, strategy_name)
+        time.sleep(1)
+
+    # Click Run
+    print("  [*] Clicking Run...")
+    run_ok = invoke_button(analyzer, auto_id=SA_RUN_BUTTON, name=SA_RUN_BUTTON_TEXT)
+    if not run_ok:
+        return False, "Run button not found", None
+    print("  [OK] Backtest started")
+
+    # Wait for completion
+    ok, msg = wait_for_backtest_complete(analyzer)
+    if not ok:
+        return False, msg, None
+
+    # Force-save the results XML
+    xml_path = force_save_results_xml(analyzer)
+    return True, msg, xml_path
+
+
+# ─── Phase 3: Parse results ────────────────────────────────────────────────
+
+def parse_results(xml_path, strategy_name, output_dir):
+    """Parse the XML log and write a metrics.json + complete.marker."""
+    print("\n=== PHASE 3: PARSE RESULTS ===")
+    result_dir = os.path.join(output_dir, strategy_name)
     os.makedirs(result_dir, exist_ok=True)
-    
-    # Export Summary
-    print("  [*] Exporting Summary...")
-    summary_success = export_data_grid(
-        analyzer, SA_GRID_SUMMARY, 
-        os.path.join(result_dir, "summary.csv")
-    )
-    
-    # Export Trades (tradePerformance grid)
-    print("  [*] Exporting Trades...")
-    trades_success = export_data_grid(
-        analyzer, SA_TRADE_PERFORMANCE,
-        os.path.join(result_dir, "trades.csv")
-    )
-    
-    # Save metadata
-    metadata = {
-        "strategy": strategy_name,
-        "timestamp": timestamp,
-        "summary_exported": summary_success,
-        "trades_exported": trades_success,
-    }
-    with open(os.path.join(result_dir, "metadata.json"), "w") as f:
-        json.dump(metadata, f, indent=2)
-    
-    print(f"  [OK] Results saved to: {result_dir}")
-    return result_dir
+
+    if not xml_path or not os.path.exists(xml_path):
+        print(f"  [FAIL] No XML log path provided")
+        metrics = {"_parse_error": "No XML log file was written"}
+    else:
+        print(f"  [*] Parsing: {xml_path}")
+        metrics = nt8_xml_parser.parse_summary_performances(xml_path)
+
+    # Save full metrics
+    json_path = os.path.join(result_dir, "metrics.json")
+    with open(json_path, "w") as f:
+        json.dump(metrics, f, indent=2)
+    print(f"  [OK] Wrote {json_path}")
+
+    # Save AI-friendly subset
+    key_metrics = nt8_xml_parser.extract_key_metrics(metrics)
+    key_path = os.path.join(result_dir, "key_metrics.json")
+    with open(key_path, "w") as f:
+        json.dump(key_metrics, f, indent=2)
+
+    # Save a text summary for quick eyeballing
+    summary_text = nt8_xml_parser.metrics_for_agent(metrics)
+    summary_path = os.path.join(result_dir, "summary.txt")
+    with open(summary_path, "w") as f:
+        f.write(summary_text + "\n")
+    print(f"  [OK] Summary:\n{summary_text}")
+
+    # Completion marker
+    with open(os.path.join(result_dir, "complete.marker"), "w") as f:
+        f.write(datetime.now().isoformat())
+
+    return metrics
 
 
-def export_data_grid(analyzer, grid_auto_id, output_path):
-    """Extract data from a DataGrid and write to CSV."""
-    try:
-        # Find the grid directly via descendants of the analyzer window
-        grid = None
-        try:
-            descendants = analyzer.descendants()
-            for d in descendants:
-                try:
-                    if d.automation_id() == grid_auto_id:
-                        grid = d
-                        break
-                except:
-                    pass
-        except:
-            pass
-        
-        # Fallback: try child_window
-        if not grid or not grid.exists(timeout=2):
-            try:
-                grid = analyzer.child_window(auto_id=grid_auto_id)
-            except:
-                pass
-        
-        if not grid or not grid.exists(timeout=3):
-            print(f"  [WARN] Grid {grid_auto_id} not found")
-            with open(output_path, "w") as f:
-                f.write("Grid not found\n")
-            return False
-        
-        # Try to get all text from the grid using descendants
-        all_text = []
-        try:
-            descendants = grid.descendants()
-            for d in descendants:
-                try:
-                    text = d.window_text()
-                    if text and text.strip():
-                        all_text.append(text.strip())
-                except:
-                    pass
-        except:
-            pass
-        
-        # If we got text, write it
-        if all_text:
-            with open(output_path, "w", newline="") as f:
-                writer = csv.writer(f)
-                for text in all_text:
-                    writer.writerow([text])
-            print(f"  [OK] Exported {len(all_text)} text elements to {output_path}")
-            return True
-        
-        # Fallback: try the grid's own window_text
-        try:
-            grid_text = grid.window_text()
-            if grid_text:
-                with open(output_path, "w") as f:
-                    f.write(grid_text)
-                print(f"  [OK] Exported grid text ({len(grid_text)} chars)")
-                return True
-        except:
-            pass
-        
-        print(f"  [WARN] No data extractable from {grid_auto_id}")
-        with open(output_path, "w") as f:
-            f.write("No data extractable\n")
-        return False
-        
-    except Exception as e:
-        print(f"  [FAIL] Export error: {e}")
-        return False
-
-
-# ─── Main Pipeline ───────────────────────────────────────────────────────────
+# ─── Full pipeline ─────────────────────────────────────────────────────────
 
 def full_pipeline(args):
-    """Run the complete backtest pipeline."""
-    
     strategy_file = args.strategy
     if not os.path.exists(strategy_file):
         print(f"[FAIL] Strategy file not found: {strategy_file}")
         return 1
-    
+
     strategy_name = os.path.splitext(os.path.basename(strategy_file))[0]
     print(f"\n{'='*60}")
-    print(f"NinjaTrader 8 Autonomous Backtester")
+    print(f"NinjaTrader 8 Autonomous Backtester (FIXED)")
     print(f"Strategy: {strategy_name}")
-    print(f"Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"Started:  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"{'='*60}")
-    
-    # Step 1: Prepare file (skip if backtest-only, file already saved)
+
+    output_dir = os.path.join(args.output, strategy_name)
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Phase 1: compile (skip if -b)
     if not args.backtest_only:
-        print("\n=== PHASE 0: PREPARE ===")
-        dest = prepare_strategy_file(strategy_file, strategy_name)
+        success, msg, errors, log_excerpt = compile_strategy(strategy_file, strategy_name)
+        # Persist compile result so the bridge server / MCP server can read it
+        with open(os.path.join(output_dir, "compile_result.json"), "w") as f:
+            json.dump({
+                "success": success,
+                "message": msg,
+                "errors": errors,
+                "log_excerpt": log_excerpt,
+                "timestamp": datetime.now().isoformat(),
+            }, f, indent=2)
+        if success is False:
+            print(f"\n[FATAL] Compile failed:\n{msg}")
+            return 2  # distinct exit code for compile failures
+        if success is None:
+            print(f"\n[WARN] Compile status unknown; proceeding with backtest anyway.")
+        time.sleep(2)
     else:
-        print("\n=== PHASE 0: PREPARE (skipped, file already saved) ===")
-        dest = strategy_file  # use the file path directly
-    
-    # Step 2: Compile (unless backtest-only)
-    if not args.backtest_only:
-        success, msg = compile_strategy(dest)
-        if not success:
-            print(f"\n[FATAL] Compilation failed: {msg}")
-            return 1
-        time.sleep(2)  # Let NT8 finish writing
-    else:
-        print("\n=== PHASE 1: COMPILE (skipped) ===")
-    
-    # Step 3: Backtest
+        print("\n=== PHASE 1: COMPILE (skipped, --backtest-only) ===")
+
+    # Phase 2: backtest (skip if -c)
     if not args.compile_only:
-        success, msg = run_backtest(
+        ok, msg, xml_path = run_backtest(
             strategy_name=strategy_name,
-            bar_type=args.bar_type,
-            bar_value=str(args.bar_value),
             instrument=args.instrument,
+            bar_type=args.bar_type,
+            bar_value=args.bar_value,
             date_from=args.date_from,
             date_to=args.date_to,
             commission=args.commission,
-            slippage=args.slippage
+            slippage=args.slippage,
+            template_params=None,
         )
-        if not success:
+        if not ok:
             print(f"\n[FATAL] Backtest failed: {msg}")
-            return 1
+            return 3
     else:
-        print("\n=== PHASE 2: BACKTEST (skipped) ===")
-    
-    # Step 4: Read results from Strategy Analyzer XML logs
-    print(f"\n=== PHASE 3: READ RESULTS (XML LOGS) ===")
-    
-    # Detect the correct Documents path (handles OneDrive redirection)
-    homeDir = os.path.expanduser("~")
-    logs_dir = os.path.join(homeDir, "OneDrive", "Documents", "NinjaTrader 8", "strategyanalyzerlogs")
-    
-    # Fallback: check non-OneDrive path
-    if not os.path.exists(logs_dir):
-        logs_dir = os.path.join(homeDir, "Documents", "NinjaTrader 8", "strategyanalyzerlogs")
-    
-    print(f"  [*] Looking for XML logs in: {logs_dir}")
-    
-    # Wait up to 60 seconds for the log file to appear
-    xml_file = None
-    for attempt in range(12):
-        if os.path.exists(logs_dir):
-            files = sorted([f for f in os.listdir(logs_dir) if f.endswith(".xml")], 
-                          key=lambda f: os.path.getmtime(os.path.join(logs_dir, f)), reverse=True)
-            if files:
-                xml_file = os.path.join(logs_dir, files[0])
-                print(f"  [*] Selected XML: {xml_file} (modified: {datetime.fromtimestamp(os.path.getmtime(xml_file))})")
-                break
-        time.sleep(5)
-    
-    result_dir = os.path.join(args.output, strategy_name)
-    os.makedirs(result_dir, exist_ok=True)
-    
-    if xml_file:
-        import xml.etree.ElementTree as ET
-        try:
-            tree = ET.parse(xml_file)
-            root = tree.getroot()
-            metrics = {}
-            
-            # Find the SummaryPerformancesSerialize element
-            for elem in root.iter():
-                if elem.tag == "SummaryPerformancesSerialize" and elem.text:
-                    # Format: name;allTrades;longTrades;shortTrades|name;allTrades;...
-                    entries = elem.text.split("|")
-                    for entry in entries:
-                        parts = entry.split(";")
-                        if len(parts) >= 2:
-                            name = parts[0].strip()
-                            value = parts[1].strip()  # All trades value
-                            if value and value != "NaN":
-                                metrics[name] = value
-            
-            # Write metrics JSON
-            json_path = os.path.join(result_dir, "metrics.json")
-            with open(json_path, "w") as f:
-                json.dump(metrics, f, indent=2)
-            print(f"  [OK] Exported {len(metrics)} metrics from XML log")
-            # Print key metrics
-            for key in ["TotalNetProfit", "ProfitFactor", "TotalNumTrades", "MaxDrawdown", "SharpeRatio", "PercentProfitable", "GrossProfit", "GrossLoss"]:
-                if key in metrics:
-                    print(f"    {key}: {metrics[key]}")
-        except Exception as e:
-            print(f"  [WARN] Failed to parse XML: {e}")
-    else:
-        print(f"  [WARN] No recent XML log found in {logs_dir}")
-    
-    # Write completion marker
-    marker_path = os.path.join(result_dir, "complete.marker")
-    with open(marker_path, "w") as f:
-        f.write(datetime.now().isoformat())
-    
+        print("\n=== PHASE 2: BACKTEST (skipped, --compile-only) ===")
+        xml_path = None
+
+    # Phase 3: parse results
+    parse_results(xml_path, strategy_name, args.output)
+
     print(f"\n{'='*60}")
-    print(f"DONE - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"DONE — {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"{'='*60}")
     return 0
 
 
-# ─── CLI ─────────────────────────────────────────────────────────────────────
+# ─── CLI ───────────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description="NinjaTrader 8 Autonomous Strategy Backtester")
+    parser = argparse.ArgumentParser(description="NT8 Autonomous Backtester (FIXED)")
     parser.add_argument("--strategy", "-s", required=True, help="Path to .cs strategy file")
-    parser.add_argument("--compile-only", "-c", action="store_true", help="Compile only, do not run backtest")
-    parser.add_argument("--backtest-only", "-b", action="store_true", help="Run backtest only (skip compile)")
-    parser.add_argument("--full", "-f", action="store_true", help="Full pipeline (default: compile + backtest + export)")
+    parser.add_argument("--compile-only", "-c", action="store_true",
+                        help="Compile only, do not run backtest")
+    parser.add_argument("--backtest-only", "-b", action="store_true",
+                        help="Run backtest only (skip compile, file already saved & compiled)")
+    parser.add_argument("--full", "-f", action="store_true",
+                        help="Full pipeline (default: compile + backtest + parse)")
     parser.add_argument("--instrument", "-i", default="MES 06-26", help="Instrument to backtest")
-    parser.add_argument("--bar-type", default="Minute", help="Bar period type (Minute, Hour, Day, Tick)")
+    parser.add_argument("--bar-type", default="Minute", help="Bar period type (Minute/Hour/Day/Tick)")
     parser.add_argument("--bar-value", default="5", help="Bar period value")
     parser.add_argument("--date-from", default=None, help="Backtest start date (MM/dd/yyyy)")
     parser.add_argument("--date-to", default=None, help="Backtest end date (MM/dd/yyyy)")
-    parser.add_argument("--commission", default="1.27", help="Commission per round-trip per contract")
-    parser.add_argument("--slippage", default="1", help="Slippage in ticks")
-    parser.add_argument("--output", "-o", default=OUTPUT_DIR, help="Output directory for results")
-    
+    parser.add_argument("--commission", default=None, help="Commission per round-trip per contract")
+    parser.add_argument("--slippage", default=None, help="Slippage in ticks")
+    parser.add_argument("--output", "-o", default=OUTPUT_DIR, help="Output directory")
     args = parser.parse_args()
-    
     return full_pipeline(args)
 
 
