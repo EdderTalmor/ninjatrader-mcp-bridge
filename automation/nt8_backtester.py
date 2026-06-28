@@ -105,7 +105,7 @@ def find_control(parent, auto_id=None, control_type=None, name=None, timeout=5):
 
 
 def invoke_button(parent, auto_id=None, name=None):
-    """Find and click a button."""
+    """Find and click a button — searches descendants if not found at child level."""
     btn = find_control(parent, auto_id=auto_id, name=name)
     if btn:
         try:
@@ -113,6 +113,23 @@ def invoke_button(parent, auto_id=None, name=None):
             return True
         except Exception as e:
             print(f"  [WARN] Failed to invoke button: {e}")
+    
+    # Fallback: search all descendants
+    try:
+        descendants = parent.descendants()
+        for d in descendants:
+            try:
+                if auto_id and d.automation_id() == auto_id:
+                    d.invoke()
+                    return True
+                if name and d.window_text() == name:
+                    d.invoke()
+                    return True
+            except:
+                pass
+    except Exception as e:
+        print(f"  [WARN] Descendant search failed: {e}")
+    
     return False
 
 
@@ -336,17 +353,19 @@ def run_backtest(strategy_name, bar_type="Minute", bar_value="5",
     
     # Click Run
     print("  [*] Running backtest...")
+    time.sleep(2)  # Let Strategy Analyzer fully load the strategy
+    
+    # Try to click the Run button
     run_success = invoke_button(analyzer, name=SA_RUN_BUTTON)
+    if not run_success:
+        # Try by auto_id as fallback
+        run_success = invoke_button(analyzer, auto_id=SA_RUN_BUTTON)
+    
     if run_success:
         print("  [OK] Backtest started")
     else:
-        print("  [WARN] Run button not found; trying auto_id...")
-        run_success = invoke_button(analyzer, auto_id=SA_RUN_BUTTON)
-        if run_success:
-            print("  [OK] Backtest started (via auto_id)")
-        else:
-            print("  [FAIL] Could not find Run button")
-            return False, "Run button not found"
+        print("  [FAIL] Could not find Run button")
+        return False, "Run button not found"
     
     # Wait for backtest to complete
     print("  [*] Waiting for backtest to complete...")
