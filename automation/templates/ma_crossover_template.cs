@@ -43,9 +43,20 @@ namespace NinjaTrader.NinjaScript.Strategies
                 AddChartIndicator(fastSMA);
                 AddChartIndicator(slowSMA);
             }
+            else if (State == State.Historical)
+            {
+                // Running in Strategy Analyzer backtest
+                Print($"MCP_EXPORT: Historical backtest started for {{CLASS_NAME}}");
+            }
+            else if (State == State.Realtime)
+            {
+                // Backtest completed — transition from Historical to Realtime
+                Print($"MCP_EXPORT: Backtest complete for {{CLASS_NAME}}, exporting...");
+                ExportResults();
+            }
             else if (State == State.Terminated)
             {
-                // Export results after backtest completes
+                // Safety net: export if not already done
                 if (!exported)
                 {
                     ExportResults();
