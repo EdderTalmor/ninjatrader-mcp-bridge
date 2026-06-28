@@ -599,7 +599,8 @@ def full_pipeline(args):
     xml_file = None
     for attempt in range(12):
         if os.path.exists(logs_dir):
-            files = sorted([f for f in os.listdir(logs_dir) if f.endswith(".xml")], reverse=True)
+            files = sorted([f for f in os.listdir(logs_dir) if f.endswith(".xml")], 
+                          key=lambda f: os.path.getmtime(os.path.join(logs_dir, f)), reverse=True)
             if files:
                 xml_file = os.path.join(logs_dir, files[0])
                 print(f"  [*] Selected XML: {xml_file} (modified: {datetime.fromtimestamp(os.path.getmtime(xml_file))})")
