@@ -294,33 +294,71 @@ def run_full_pipeline(data, backtest_only=False):
         result["error"] = "Backtest timed out after 600s"
         return result
     
-    # Step 3: Read results — strategy auto-exports to JSON on completion
-    print(f"[*] Reading exported results...")
-    result_dir = os.path.join(OUTPUT_DIR, strategy_name)
+    # Step 3: Read results from Strategy Analyzer XML logs
+    print(f"[*] Reading results from Strategy Analyzer XML logs...")
+    logs_dir = os.path.expanduser(r"~\Documents\NinjaTrader 8\strategyanalyzerlogs")
     
-    # Wait up to 30 seconds for the strategy to export
-    json_file = None
-    for attempt in range(6):
-        if os.path.exists(result_dir):
-            files = sorted([f for f in os.listdir(result_dir) if f.startswith("results_") and f.endswith(".json")], reverse=True)
+    # Wait up to 60 seconds for the log file to appear
+    xml_file = None
+    for attempt in range(12):
+        if os.path.exists(logs_dir):
+            files = sorted([f for f in os.listdir(logs_dir) if f.endswith(".xml")], reverse=True)
             if files:
-                json_file = os.path.join(result_dir, files[0])
-                break
+                # Get the most recent file that was modified in the last 5 minutes
+                xml_file_path = os.path.join(logs_dir, files[0])
+                mtime = os.path.getmtime(xml_file_path)
+                if time.time() - mtime < 300:  # modified in last 5 min
+                    xml_file = xml_file_path
+                    break
         time.sleep(5)
     
-    if json_file:
-        with open(json_file) as f:
-            exported_data = json.load(f)
-        result["exported"] = True
-        result["export_file"] = json_file
-        result["total_trades"] = exported_data.get("totalTrades", 0)
-        result["trades"] = exported_data.get("trades", [])
-        print(f"  [OK] Results exported: {exported_data.get('totalTrades', 0)} trades")
-    elif os.path.exists(result_dir):
-        print(f"  [WARN] Output dir exists but no JSON files found")
-        result["export_dir"] = result_dir
+    if xml_file:
+        # Parse the XML log
+        import xml.etree.ElementTree as ET
+        try:
+            tree = ET.parse(xml_file)
+            root = tree.getroot()
+            
+            # Extract key metrics from the XML
+            metrics = {}
+            for elem in root.iter():
+                tag = elem.tag.lower()
+                text = elem.text.strip() if elem.text else ""
+                if text:
+                    if "netprofit" in tag or "net profit" in tag:
+                        metrics["net_profit"] = text
+                    elif "profitfactor" in tag or "profit factor" in tag:
+                        metrics["profit_factor"] = text
+                    elif "totaltrades" in tag or "total trades" in tag or "trade count" in tag:
+                        metrics["total_trades"] = text
+                    elif "maxdrawdown" in tag or "max drawdown" in tag:
+                        metrics["max_drawdown"] = text
+                    elif "sharperatio" in tag or "sharpe ratio" in tag:
+                        metrics["sharpe_ratio"] = text
+                    elif "percentprofitable" in tag or "percent profitable" in tag:
+                        metrics["win_rate"] = text
+                    elif "grossprofit" in tag or "gross profit" in tag:
+                        metrics["gross_profit"] = text
+                    elif "grossloss" in tag or "gross loss" in tag:
+                        metrics["gross_loss"] = text
+                    elif "commission" in tag:
+                        metrics["commission"] = text
+                    elif "maxconsecutivelosers" in tag or "max consec losers" in tag:
+                        metrics["max_consec_losers"] = text
+                    elif "avgtrade" in tag or "avg trade" in tag:
+                        metrics["avg_trade"] = text
+            
+            result["metrics"] = metrics
+            result["xml_log"] = xml_file
+            result["exported"] = True
+            print(f"  [OK] Results extracted from XML log")
+            for k, v in metrics.items():
+                print(f"    {k}: {v}")
+        except Exception as e:
+            print(f"  [WARN] Failed to parse XML: {e}")
+            result["xml_log"] = xml_file
     else:
-        print(f"  [WARN] Output dir not found: {result_dir}")
+        print(f"  [WARN] No recent XML log files found in {logs_dir}")
     
     result["success"] = True
     result["completed"] = datetime.now().isoformat()
