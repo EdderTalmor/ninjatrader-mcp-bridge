@@ -615,30 +615,29 @@ def full_pipeline(args):
             tree = ET.parse(xml_file)
             root = tree.getroot()
             metrics = {}
+            
+            # Find the SummaryPerformancesSerialize element
             for elem in root.iter():
-                tag = elem.tag.lower()
-                text = elem.text.strip() if elem.text else ""
-                if text:
-                    if "netprofit" in tag or "netprofit" in tag: metrics["net_profit"] = text
-                    elif "profitfactor" in tag: metrics["profit_factor"] = text
-                    elif "grossprofit" in tag: metrics["gross_profit"] = text
-                    elif "grossloss" in tag: metrics["gross_loss"] = text
-                    elif "totaltrades" in tag: metrics["total_trades"] = text
-                    elif "percentprofitable" in tag: metrics["win_rate"] = text
-                    elif "maxdrawdown" in tag: metrics["max_drawdown"] = text
-                    elif "sharperatio" in tag: metrics["sharpe_ratio"] = text
-                    elif "sortinoratio" in tag: metrics["sortino_ratio"] = text
-                    elif "maxconsecutivelosers" in tag: metrics["max_consec_losers"] = text
-                    elif "avgtrade" in tag: metrics["avg_trade"] = text
-                    elif "commission" in tag and "template" not in tag: metrics["commission"] = text
+                if elem.tag == "SummaryPerformancesSerialize" and elem.text:
+                    # Format: name;allTrades;longTrades;shortTrades|name;allTrades;...
+                    entries = elem.text.split("|")
+                    for entry in entries:
+                        parts = entry.split(";")
+                        if len(parts) >= 2:
+                            name = parts[0].strip()
+                            value = parts[1].strip()  # All trades value
+                            if value and value != "NaN":
+                                metrics[name] = value
             
             # Write metrics JSON
             json_path = os.path.join(result_dir, "metrics.json")
             with open(json_path, "w") as f:
                 json.dump(metrics, f, indent=2)
             print(f"  [OK] Exported {len(metrics)} metrics from XML log")
-            for k, v in metrics.items():
-                print(f"    {k}: {v}")
+            # Print key metrics
+            for key in ["TotalNetProfit", "ProfitFactor", "TotalNumTrades", "MaxDrawdown", "SharpeRatio", "PercentProfitable", "GrossProfit", "GrossLoss"]:
+                if key in metrics:
+                    print(f"    {key}: {metrics[key]}")
         except Exception as e:
             print(f"  [WARN] Failed to parse XML: {e}")
     else:
