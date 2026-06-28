@@ -39,31 +39,50 @@ backtest_lock = threading.Lock()
 app = Flask(__name__)
 
 
+# ─── Background Job Runner ──────────────────────────────────────────────────
+
+import threading
+import uuid
+
+jobs = {}  # job_id -> {"status": "running"|"done"|"error", "result": ..., "error": ...}
+jobs_lock = threading.Lock()
+
+
+def run_pipeline_background(data):
+    """Run the full pipeline in a background thread."""
+    job_id = str(uuid.uuid4())[:8]
+    
+    with jobs_lock:
+        jobs[job_id] = {"status": "running", "started": datetime.now().isoformat()}
+    
+    def worker():
+        try:
+            result = run_full_pipeline(data)
+            with jobs_lock:
+                jobs[job_id] = {"status": "done", "result": result, "completed": datetime.now().isoformat()}
+        except Exception as e:
+            with jobs_lock:
+                jobs[job_id] = {"status": "error", "error": str(e), "completed": datetime.now().isoformat()}
+    
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+    return job_id
+
+
 # ─── Routes ─────────────────────────────────────────────────────────────────
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "server": "nt8-bridge", "time": datetime.now().isoformat()})
+    with jobs_lock:
+        active = sum(1 for j in jobs.values() if j["status"] == "running")
+    return jsonify({"status": "ok", "server": "nt8-bridge", "active_jobs": active, "time": datetime.now().isoformat()})
 
 
 @app.route("/test-strategy", methods=["POST"])
 def test_strategy():
     """
-    Full pipeline: save .cs → compile → backtest → return results.
-    
-    Expected JSON body:
-    {
-        "strategy_code": "... full .cs code ...",
-        "strategy_name": "MyStrategy",       // optional, auto-generated if missing
-        "instrument": "MES 06-26",
-        "bar_type": "Minute",
-        "bar_value": 5,
-        "date_from": "01/01/2025",           // optional
-        "date_to": "06/26/2026",             // optional
-        "commission": "1.27",                // optional
-        "slippage": "1",                     // optional
-        "template_params": {"Fast": "10", "Slow": "25"}  // optional strategy params to inject
-    }
+    Submit a strategy for testing. Returns immediately with a job_id.
+    Poll /job/<job_id> for results.
     """
     data = request.get_json()
     if not data:
@@ -72,17 +91,26 @@ def test_strategy():
     if "strategy_code" not in data:
         return jsonify({"error": "strategy_code is required"}), 400
     
-    # Only one backtest at a time
-    if not backtest_lock.acquire(blocking=False):
-        return jsonify({"error": "Another backtest is running. Try again later."}), 429
+    job_id = run_pipeline_background(data)
+    return jsonify({"job_id": job_id, "status": "submitted", "poll_url": f"/job/{job_id}"})
+
+
+@app.route("/job/<job_id>", methods=["GET"])
+def get_job(job_id):
+    """Get the status/result of a submitted job."""
+    with jobs_lock:
+        job = jobs.get(job_id)
     
-    try:
-        result = run_full_pipeline(data)
-        return jsonify(result)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-    finally:
-        backtest_lock.release()
+    if not job:
+        return jsonify({"error": f"Job {job_id} not found"}), 404
+    
+    if job["status"] == "running":
+        return jsonify({"job_id": job_id, "status": "running"})
+    
+    if job["status"] == "error":
+        return jsonify({"job_id": job_id, "status": "error", "error": job["error"]})
+    
+    return jsonify({"job_id": job_id, "status": "done", "result": job["result"]})
 
 
 @app.route("/compile", methods=["POST"])
@@ -400,4 +428,4 @@ if __name__ == "__main__":
     print(f"Server starting on port {BRIDGE_PORT}...")
     print(f"Test with: curl http://localhost:{BRIDGE_PORT}/health\n")
     
-    app.run(host="0.0.0.0", port=BRIDGE_PORT, debug=False)
+    app.run(host="0.0.0.0", port=BRIDGE_PORT, debug=False, threaded=True)
