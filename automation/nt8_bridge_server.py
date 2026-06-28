@@ -294,33 +294,33 @@ def run_full_pipeline(data, backtest_only=False):
         result["error"] = "Backtest timed out after 600s"
         return result
     
-    # Step 3: Read results
-    print(f"[*] Reading results...")
+    # Step 3: Read results — strategy auto-exports to JSON on completion
+    print(f"[*] Reading exported results...")
     result_dir = os.path.join(OUTPUT_DIR, strategy_name)
     
-    # Find latest run
-    if os.path.exists(result_dir):
-        runs = sorted([d for d in os.listdir(result_dir) if os.path.isdir(os.path.join(result_dir, d))], reverse=True)
-        if runs:
-            latest_run = os.path.join(result_dir, runs[0])
-            
-            # Parse summary CSV
-            summary_file = os.path.join(latest_run, "summary.csv")
-            if os.path.exists(summary_file):
-                with open(summary_file) as f:
-                    content = f.read()
-                result["summary_csv"] = content
-                
-                # Try to extract key metrics from the CSV
-                result["metrics"] = parse_summary_csv(content)
-            
-            # Parse trades CSV
-            trades_file = os.path.join(latest_run, "trades.csv")
-            if os.path.exists(trades_file):
-                with open(trades_file) as f:
-                    result["trades_csv"] = f.read()[:3000]
-            
-            result["output_dir"] = latest_run
+    # Wait up to 30 seconds for the strategy to export
+    json_file = None
+    for attempt in range(6):
+        if os.path.exists(result_dir):
+            files = sorted([f for f in os.listdir(result_dir) if f.startswith("results_") and f.endswith(".json")], reverse=True)
+            if files:
+                json_file = os.path.join(result_dir, files[0])
+                break
+        time.sleep(5)
+    
+    if json_file:
+        with open(json_file) as f:
+            exported_data = json.load(f)
+        result["exported"] = True
+        result["export_file"] = json_file
+        result["total_trades"] = exported_data.get("totalTrades", 0)
+        result["trades"] = exported_data.get("trades", [])
+        print(f"  [OK] Results exported: {exported_data.get('totalTrades', 0)} trades")
+    elif os.path.exists(result_dir):
+        print(f"  [WARN] Output dir exists but no JSON files found")
+        result["export_dir"] = result_dir
+    else:
+        print(f"  [WARN] Output dir not found: {result_dir}")
     
     result["success"] = True
     result["completed"] = datetime.now().isoformat()
