@@ -584,7 +584,16 @@ def full_pipeline(args):
     
     # Step 4: Read results from Strategy Analyzer XML logs
     print(f"\n=== PHASE 3: READ RESULTS (XML LOGS) ===")
-    logs_dir = os.path.expanduser(r"~\Documents\NinjaTrader 8\strategyanalyzerlogs")
+    
+    # Detect the correct Documents path (handles OneDrive redirection)
+    homeDir = os.path.expanduser("~")
+    logs_dir = os.path.join(homeDir, "OneDrive", "Documents", "NinjaTrader 8", "strategyanalyzerlogs")
+    
+    # Fallback: check non-OneDrive path
+    if not os.path.exists(logs_dir):
+        logs_dir = os.path.join(homeDir, "Documents", "NinjaTrader 8", "strategyanalyzerlogs")
+    
+    print(f"  [*] Looking for XML logs in: {logs_dir}")
     
     # Wait up to 60 seconds for a fresh XML log
     xml_file = None
