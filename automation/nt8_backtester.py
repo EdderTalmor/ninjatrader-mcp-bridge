@@ -458,22 +458,28 @@ def export_results(analyzer, strategy_name, output_dir):
 def export_data_grid(analyzer, grid_auto_id, output_path):
     """Extract data from a DataGrid and write to CSV."""
     try:
-        grid = analyzer.child_window(auto_id=grid_auto_id)
-        if not grid.exists(timeout=5):
+        # Re-find the grid via Desktop to ensure proper UIAWrapper
+        desktop = Desktop(backend="uia")
+        grid = desktop.window(auto_id=analyzer.auto_id()).child_window(auto_id=grid_auto_id)
+        if not grid.exists(timeout=3):
+            # Fallback: search descendants of analyzer
+            try:
+                descendants = analyzer.descendants()
+                for d in descendants:
+                    try:
+                        if d.automation_id() == grid_auto_id:
+                            grid = d
+                            break
+                    except:
+                        pass
+            except:
+                pass
+        
+        if not grid.exists(timeout=3):
             print(f"  [WARN] Grid {grid_auto_id} not found")
-            # Fallback: search all descendants of the analyzer
-            descendants = analyzer.descendants()
-            for d in descendants:
-                try:
-                    if d.automation_id() == grid_auto_id:
-                        grid = d
-                        break
-                except:
-                    pass
-            if not grid.exists(timeout=3):
-                with open(output_path, "w") as f:
-                    f.write("Grid not found\n")
-                return False
+            with open(output_path, "w") as f:
+                f.write("Grid not found\n")
+            return False
         
         # Try to get all text from the grid using descendants
         all_text = []
