@@ -35,7 +35,9 @@ except ImportError:
 
 # ─── Configuration ──────────────────────────────────────────────────────────
 
-NT8_STRATEGIES_DIR = os.path.expanduser(r"~\Documents\NinjaTrader 8\bin\Custom\Strategies")
+NT8_STRATEGIES_DIR = os.path.join(os.path.expanduser("~"), "OneDrive", "Documents", "NinjaTrader 8", "bin", "Custom", "Strategies")
+if not os.path.exists(NT8_STRATEGIES_DIR):
+    NT8_STRATEGIES_DIR = os.path.expanduser(r"~\Documents\NinjaTrader 8\bin\Custom\Strategies")
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
 POLL_INTERVAL = 0.5  # seconds
 COMPILE_TIMEOUT = 15

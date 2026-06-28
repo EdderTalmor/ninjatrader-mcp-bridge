@@ -31,7 +31,10 @@ except ImportError:
 BRIDGE_PORT = 8787
 BACKTESTER_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nt8_backtester.py")
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
-STRATEGIES_DIR = os.path.expanduser(r"~\Documents\NinjaTrader 8\bin\Custom\Strategies")
+STRATEGIES_DIR = os.path.join(os.path.expanduser("~"), "OneDrive", "Documents", "NinjaTrader 8", "bin", "Custom", "Strategies")
+# Fallback to non-OneDrive path
+if not os.path.exists(STRATEGIES_DIR):
+    STRATEGIES_DIR = os.path.expanduser(r"~\Documents\NinjaTrader 8\bin\Custom\Strategies")
 
 # Thread lock to prevent concurrent backtests (NT8 can only do one at a time)
 backtest_lock = threading.Lock()
