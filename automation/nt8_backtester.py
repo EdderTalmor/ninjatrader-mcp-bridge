@@ -521,9 +521,13 @@ def full_pipeline(args):
     print(f"Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"{'='*60}")
     
-    # Step 1: Prepare file
-    print("\n=== PHASE 0: PREPARE ===")
-    dest = prepare_strategy_file(strategy_file, strategy_name)
+    # Step 1: Prepare file (skip if backtest-only, file already saved)
+    if not args.backtest_only:
+        print("\n=== PHASE 0: PREPARE ===")
+        dest = prepare_strategy_file(strategy_file, strategy_name)
+    else:
+        print("\n=== PHASE 0: PREPARE (skipped, file already saved) ===")
+        dest = strategy_file  # use the file path directly
     
     # Step 2: Compile (unless backtest-only)
     if not args.backtest_only:

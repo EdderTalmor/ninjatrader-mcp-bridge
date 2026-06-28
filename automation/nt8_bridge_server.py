@@ -195,7 +195,7 @@ def inject_parameters(strategy_code, params):
     return strategy_code
 
 
-def run_full_pipeline(data):
+def run_full_pipeline(data, backtest_only=False):
     """Execute the full compile + backtest + export pipeline."""
     
     strategy_code = data.get("strategy_code", "")
@@ -225,11 +225,10 @@ def run_full_pipeline(data):
     filepath, filename = save_strategy_file(strategy_code, strategy_name)
     result["steps"]["save"] = f"Saved to {filename}"
     
-    # Step 2: Run backtester (pass --backtest-only since file is already saved)
+    # Step 2: Run backtester
     print(f"[*] Running backtester...")
     cmd = [
         sys.executable, BACKTESTER_SCRIPT,
-        "-b",  # backtest only (file already saved)
         "-s", filepath,
         "--instrument", instrument,
         "--bar-type", bar_type,
@@ -237,6 +236,8 @@ def run_full_pipeline(data):
         "--commission", commission,
         "--slippage", slippage,
     ]
+    if backtest_only:
+        cmd.append("-b")  # backtest only (skip compile, file already saved)
     if date_from:
         cmd.extend(["--date-from", date_from])
     if date_to:
