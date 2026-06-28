@@ -150,6 +150,11 @@ def save_strategy_file(strategy_code, strategy_name):
         safe_name += ".cs"
     
     filepath = os.path.join(STRATEGIES_DIR, safe_name)
+    
+    # Remove old file if exists (to avoid SameFileError)
+    if os.path.exists(filepath):
+        os.remove(filepath)
+    
     with open(filepath, "w", encoding="utf-8") as f:
         f.write(strategy_code)
     
@@ -220,10 +225,11 @@ def run_full_pipeline(data):
     filepath, filename = save_strategy_file(strategy_code, strategy_name)
     result["steps"]["save"] = f"Saved to {filename}"
     
-    # Step 2: Run backtester
+    # Step 2: Run backtester (pass --backtest-only since file is already saved)
     print(f"[*] Running backtester...")
     cmd = [
         sys.executable, BACKTESTER_SCRIPT,
+        "-b",  # backtest only (file already saved)
         "-s", filepath,
         "--instrument", instrument,
         "--bar-type", bar_type,
