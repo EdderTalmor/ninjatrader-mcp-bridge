@@ -595,17 +595,15 @@ def full_pipeline(args):
     
     print(f"  [*] Looking for XML logs in: {logs_dir}")
     
-    # Wait up to 60 seconds for a fresh XML log
+    # Wait up to 60 seconds for the log file to appear (check every 5 sec)
     xml_file = None
     for attempt in range(12):
         if os.path.exists(logs_dir):
             files = sorted([f for f in os.listdir(logs_dir) if f.endswith(".xml")], reverse=True)
             if files:
-                candidate = os.path.join(logs_dir, files[0])
-                mtime = os.path.getmtime(candidate)
-                if time.time() - mtime < 300:  # modified in last 5 min
-                    xml_file = candidate
-                    break
+                # Just take the most recent XML file (no time restriction)
+                xml_file = os.path.join(logs_dir, files[0])
+                break
         time.sleep(5)
     
     result_dir = os.path.join(args.output, strategy_name)
