@@ -582,10 +582,65 @@ def full_pipeline(args):
     else:
         print("\n=== PHASE 2: BACKTEST (skipped) ===")
     
-    # Step 4: Export results
-    analyzer = find_window(title="Strategy Analyzer", timeout=5)
-    if analyzer:
-        result_dir = export_results(analyzer, strategy_name, args.output)
+    # Step 4: Read results from Strategy Analyzer XML logs
+    print(f"\n=== PHASE 3: READ RESULTS (XML LOGS) ===")
+    logs_dir = os.path.expanduser(r"~\Documents\NinjaTrader 8\strategyanalyzerlogs")
+    
+    # Wait up to 60 seconds for a fresh XML log
+    xml_file = None
+    for attempt in range(12):
+        if os.path.exists(logs_dir):
+            files = sorted([f for f in os.listdir(logs_dir) if f.endswith(".xml")], reverse=True)
+            if files:
+                candidate = os.path.join(logs_dir, files[0])
+                mtime = os.path.getmtime(candidate)
+                if time.time() - mtime < 300:  # modified in last 5 min
+                    xml_file = candidate
+                    break
+        time.sleep(5)
+    
+    result_dir = os.path.join(args.output, strategy_name)
+    os.makedirs(result_dir, exist_ok=True)
+    
+    if xml_file:
+        import xml.etree.ElementTree as ET
+        try:
+            tree = ET.parse(xml_file)
+            root = tree.getroot()
+            metrics = {}
+            for elem in root.iter():
+                tag = elem.tag.lower()
+                text = elem.text.strip() if elem.text else ""
+                if text:
+                    if "netprofit" in tag or "netprofit" in tag: metrics["net_profit"] = text
+                    elif "profitfactor" in tag: metrics["profit_factor"] = text
+                    elif "grossprofit" in tag: metrics["gross_profit"] = text
+                    elif "grossloss" in tag: metrics["gross_loss"] = text
+                    elif "totaltrades" in tag: metrics["total_trades"] = text
+                    elif "percentprofitable" in tag: metrics["win_rate"] = text
+                    elif "maxdrawdown" in tag: metrics["max_drawdown"] = text
+                    elif "sharperatio" in tag: metrics["sharpe_ratio"] = text
+                    elif "sortinoratio" in tag: metrics["sortino_ratio"] = text
+                    elif "maxconsecutivelosers" in tag: metrics["max_consec_losers"] = text
+                    elif "avgtrade" in tag: metrics["avg_trade"] = text
+                    elif "commission" in tag and "template" not in tag: metrics["commission"] = text
+            
+            # Write metrics JSON
+            json_path = os.path.join(result_dir, "metrics.json")
+            with open(json_path, "w") as f:
+                json.dump(metrics, f, indent=2)
+            print(f"  [OK] Exported {len(metrics)} metrics from XML log")
+            for k, v in metrics.items():
+                print(f"    {k}: {v}")
+        except Exception as e:
+            print(f"  [WARN] Failed to parse XML: {e}")
+    else:
+        print(f"  [WARN] No recent XML log found in {logs_dir}")
+    
+    # Write completion marker
+    marker_path = os.path.join(result_dir, "complete.marker")
+    with open(marker_path, "w") as f:
+        f.write(datetime.now().isoformat())
     
     print(f"\n{'='*60}")
     print(f"DONE - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
