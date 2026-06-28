@@ -471,7 +471,6 @@ def export_results(analyzer, strategy_name, output_dir):
         "timestamp": timestamp,
         "summary_exported": summary_success,
         "trades_exported": trades_success,
-        "output_dir": result_dir
     }
     with open(os.path.join(result_dir, "metadata.json"), "w") as f:
         json.dump(metadata, f, indent=2)
@@ -484,62 +483,61 @@ def export_data_grid(analyzer, grid_auto_id, output_path):
     """Extract data from a DataGrid and write to CSV."""
     try:
         grid = analyzer.child_window(auto_id=grid_auto_id)
-        if not grid.exists(timeout=3):
+        if not grid.exists(timeout=5):
             print(f"  [WARN] Grid {grid_auto_id} not found")
-            return False
-        
-        # Get all rows
-        rows = []
-        try:
-            # Try to get data directly via ValuePattern
-            descendants = grid.descendants()
-            
-            # Group by row
-            grid_rows = [d for d in descendants if d.control_type() == "DataItem"]
-            if not grid_rows:
-                # Try getting all text children
-                text_controls = [d for d in descendants if d.control_type() == "Text"]
-                cell_texts = [t.window_text() or "" for t in text_controls]
-                # Write as single column
-                with open(output_path, "w", newline="") as f:
-                    writer = csv.writer(f)
-                    for text in cell_texts:
-                        writer.writerow([text])
-                return True
-            
-            # Group cells into rows
-            # UIA exposes data items as rows with children as cells
-            current_row = []
-            for item in grid_rows:
+            # Fallback: search all descendants of the analyzer
+            descendants = analyzer.descendants()
+            for d in descendants:
                 try:
-                    cell_text = item.window_text() or ""
-                    current_row.append(cell_text)
+                    if d.automation_id() == grid_auto_id:
+                        grid = d
+                        break
                 except:
-                    if current_row:
-                        rows.append(current_row)
-                        current_row = []
-            
-            if current_row:
-                rows.append(current_row)
-        except Exception as e:
-            print(f"  [WARN] Error reading grid data: {e}")
-            # Fallback: just get all text
-            return False
+                    pass
+            if not grid.exists(timeout=3):
+                with open(output_path, "w") as f:
+                    f.write("Grid not found\n")
+                return False
         
-        # Write to CSV
-        if rows:
+        # Try to get all text from the grid using descendants
+        all_text = []
+        try:
+            descendants = grid.descendants()
+            for d in descendants:
+                try:
+                    text = d.window_text()
+                    if text and text.strip():
+                        all_text.append(text.strip())
+                except:
+                    pass
+        except:
+            pass
+        
+        # If we got text, write it
+        if all_text:
             with open(output_path, "w", newline="") as f:
                 writer = csv.writer(f)
-                writer.writerows(rows)
-            print(f"  [OK] Exported {len(rows)} rows to {output_path}")
+                for text in all_text:
+                    writer.writerow([text])
+            print(f"  [OK] Exported {len(all_text)} text elements to {output_path}")
             return True
-        else:
-            print(f"  [WARN] No data rows found in {grid_auto_id}")
-            # Write empty file as marker
-            with open(output_path, "w") as f:
-                f.write("No data\n")
-            return False
-            
+        
+        # Fallback: try the grid's own window_text
+        try:
+            grid_text = grid.window_text()
+            if grid_text:
+                with open(output_path, "w") as f:
+                    f.write(grid_text)
+                print(f"  [OK] Exported grid text ({len(grid_text)} chars)")
+                return True
+        except:
+            pass
+        
+        print(f"  [WARN] No data extractable from {grid_auto_id}")
+        with open(output_path, "w") as f:
+            f.write("No data extractable\n")
+        return False
+        
     except Exception as e:
         print(f"  [FAIL] Export error: {e}")
         return False
