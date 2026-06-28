@@ -355,6 +355,19 @@ def run_backtest(strategy_name, bar_type="Minute", bar_value="5",
     print("  [*] Running backtest...")
     time.sleep(2)  # Let Strategy Analyzer fully load the strategy
     
+    # Force a fresh backtest by changing and restoring the strategy selection
+    # This prevents NT8 from just showing cached results
+    try:
+        strategy_combo = find_control(analyzer, auto_id=SA_STRATEGY_SELECTOR)
+        if strategy_combo:
+            # Select a different strategy first, then re-select ours
+            strategy_combo.select(0)  # Select first in list
+            time.sleep(0.5)
+            strategy_combo.select(strategy_name)
+            time.sleep(1)
+    except:
+        pass
+    
     # Try to click the Run button
     run_success = invoke_button(analyzer, name=SA_RUN_BUTTON)
     if not run_success:
