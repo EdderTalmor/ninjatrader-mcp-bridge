@@ -151,7 +151,7 @@ def save_strategy_file(strategy_code, strategy_name):
     
     filepath = os.path.join(STRATEGIES_DIR, safe_name)
     
-    # Remove old file if exists (to avoid SameFileError)
+    # Remove old file if exists (to avoid SameFileError on copy)
     if os.path.exists(filepath):
         os.remove(filepath)
     

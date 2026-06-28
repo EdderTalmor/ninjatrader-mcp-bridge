@@ -211,6 +211,11 @@ def prepare_strategy_file(source_cs, strategy_name=None):
     
     os.makedirs(NT8_STRATEGIES_DIR, exist_ok=True)
     
+    # If source and dest are the same, skip copy (file already in place)
+    if os.path.exists(dest) and os.path.abspath(source_cs) == os.path.abspath(dest):
+        print(f"  [OK] Strategy already in place: {dest}")
+        return dest
+    
     import shutil
     shutil.copy2(source_cs, dest)
     print(f"  [OK] Copied strategy to: {dest}")
