@@ -601,7 +601,31 @@ def full_pipeline(args):
         if os.path.exists(logs_dir):
             files = sorted([f for f in os.listdir(logs_dir) if f.endswith(".xml")], reverse=True)
             if files:
-                # Just take the most recent XML file (no time restriction)
+                # Try to find the most recent one that matches our strategy
+                for f in files:
+                    xml_file_path = os.path.join(logs_dir, f)
+                    mtime = os.path.getmtime(xml_file_path)
+                    if time.time() - mtime < 300:  # Modified in last 5 minutes
+                        # Try to verify it contains our strategy name
+                        try:
+                            import xml.etree.ElementTree as ET
+                            tree = ET.parse(xml_file_path)
+                            root = tree.getroot()
+                            # Check if strategy name matches
+                            for elem in root.iter():
+                                if elem.tag == "NinjaScriptFile" and strategy_name in (elem.text or ""):
+                                    xml_file = xml_file_path
+                                    break
+                                if elem.tag == "Action" and elem.text == "Backtest":
+                                    xml_file = xml_file_path
+                                    break
+                            if xml_file:
+                                break
+                        except:
+                            pass
+                if xml_file:
+                    break
+                # Fallback: just use the most recent XML
                 xml_file = os.path.join(logs_dir, files[0])
                 break
         time.sleep(5)
